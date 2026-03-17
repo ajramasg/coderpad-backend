@@ -1,0 +1,11 @@
+{
+  "name": "coderpad",
+  "private": true,
+  "workspaces": ["frontend", "backend"],
+  "scripts": {
+    "dev": "concurrently -n 'backend,frontend' -c 'cyan,green' \"npm run dev --workspace=backend\" \"npm run dev --workspace=frontend\""
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

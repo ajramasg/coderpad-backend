@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { ExecutionResult } from '../types';
+import { recordSnapshot } from '../utils/localSessions';
 
 const API_BASE = ((import.meta.env.VITE_API_URL as string | undefined) ?? '').trim();
 
@@ -48,6 +49,9 @@ export function useCollab(sessionId: string | null, role: 'host' | 'candidate' |
   useEffect(() => {
     if (!sessionId || !role) return;
 
+    // Spread load: jitter each client's poll interval by 0–400 ms so
+    // 100 simultaneous interviews don't all hit the server in lock-step.
+    const pollInterval = 1000 + Math.floor(Math.random() * 400);
     pollRef.current = setInterval(async () => {
       try {
         const res = await fetch(`${API_BASE}/api/session/${encodeURIComponent(sessionId)}`);
@@ -72,12 +76,11 @@ export function useCollab(sessionId: string | null, role: 'host' | 'candidate' |
           connected: true,
           peerConnected: hasData,
           lastUpdateTs: codeUpdated ? Date.now() : s.lastUpdateTs,
-          // Host reads candidate's code/language/output
-          ...(codeUpdated ? {
-            remoteCode: data.code,
-            remoteLanguageId: data.languageId,
-            remoteOutput: data.output,
-          } : {}),
+          // Host reads candidate's code/language/output; also auto-saves to localStorage
+          ...(codeUpdated ? (() => {
+            recordSnapshot(sessionId, data.code, data.languageId, data.output);
+            return { remoteCode: data.code, remoteLanguageId: data.languageId, remoteOutput: data.output };
+          })() : {}),
           // Candidate reads question description pushed by host
           ...(descUpdated ? {
             remoteDescription: data.description ?? '',
@@ -87,7 +90,7 @@ export function useCollab(sessionId: string | null, role: 'host' | 'candidate' |
         const msg = err instanceof Error ? err.message : String(err);
         setState(s => ({ ...s, connected: false, lastError: msg }));
       }
-    }, 800);
+    }, pollInterval);
 
     setState(s => ({ ...s, connected: true }));
     return () => clearInterval(pollRef.current);

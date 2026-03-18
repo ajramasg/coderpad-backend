@@ -1,21 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import Editor from '@monaco-editor/react';
 import type { Language } from '../types';
-
-const API_BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? '';
-
-interface SessionEvent {
-  ts: number;
-  type: 'code' | 'run' | 'language';
-  code?: string;
-  languageId?: string;
-  output?: { stdout: string; stderr: string; exitCode: number; executionTime: number } | null;
-}
+import { getEvents, getSessions, type EventSnapshot } from '../utils/localSessions';
 
 interface ReplayData {
   startedAt: number;
   endedAt:   number;
-  events:    SessionEvent[];
+  events:    EventSnapshot[];
 }
 
 interface Props {
@@ -31,46 +22,42 @@ function fmtMs(ms: number): string {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
-function getStateAtTime(events: SessionEvent[], startedAt: number, currentMs: number) {
+function getStateAtTime(events: EventSnapshot[], startedAt: number, currentMs: number) {
   const cutoff = startedAt + currentMs;
-  let code: string | undefined;
-  let languageId: string | undefined;
-  let output: SessionEvent['output'] | undefined;
-
+  let last: EventSnapshot | undefined;
   for (const ev of events) {
     if (ev.ts > cutoff) break;
-    if (ev.type === 'code' && ev.code !== undefined) code = ev.code;
-    if (ev.type === 'language' && ev.languageId !== undefined) languageId = ev.languageId;
-    if (ev.type === 'run') output = ev.output;
+    last = ev;
   }
-
-  return { code: code ?? '', languageId: languageId ?? 'javascript', output: output ?? null };
+  return {
+    code:       last?.code       ?? '',
+    languageId: last?.languageId ?? 'javascript',
+    output:     last?.output     ?? null,
+  };
 }
 
 export function ReplayView({ sessionId, languages, onClose }: Props) {
-  const [data, setData]         = useState<ReplayData | null>(null);
-  const [loading, setLoading]   = useState(true);
-  const [error, setError]       = useState<string | null>(null);
+  const [data, setData]           = useState<ReplayData | null>(null);
+  const [loading, setLoading]     = useState(true);
+  const [error, setError]         = useState<string | null>(null);
   const [currentMs, setCurrentMs] = useState(0);
-  const [playing, setPlaying]   = useState(false);
-  const [speed, setSpeed]       = useState(1);
-  const intervalRef             = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [playing, setPlaying]     = useState(false);
+  const [speed, setSpeed]         = useState(1);
+  const intervalRef               = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     setLoading(true);
-    fetch(`${API_BASE}/api/session/${sessionId}/replay`)
-      .then(r => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
-      .then((d: ReplayData) => {
-        setData(d);
-        setLoading(false);
-      })
-      .catch(e => {
-        setError(e.message ?? 'Failed to load replay');
-        setLoading(false);
-      });
+    const events = getEvents(sessionId);
+    if (events.length === 0) {
+      setError('No recording found for this session.');
+      setLoading(false);
+      return;
+    }
+    const meta = getSessions().find(s => s.id === sessionId);
+    const startedAt = meta?.startedAt ?? events[0].ts;
+    const endedAt   = meta?.lastAccess ?? events[events.length - 1].ts;
+    setData({ startedAt, endedAt, events });
+    setLoading(false);
   }, [sessionId]);
 
   const totalMs = data ? Math.max(data.endedAt - data.startedAt, 1) : 0;

@@ -43,17 +43,20 @@ app.set('trust proxy', 1); // correct IP behind Railway's proxy
 
 const execLimiter = rateLimit({
   windowMs: 60_000,
-  max: 30,
+  max: 60,            // 60 executions per minute per IP
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: 'Rate limit exceeded — max 30 executions per minute.' },
+  message: { error: 'Rate limit exceeded — max 60 executions per minute.' },
 });
 
+// Key by IP + session ID so 100 simultaneous interviews from the same
+// corporate NAT each get their own independent rate-limit bucket.
 const sessionLimiter = rateLimit({
   windowMs: 60_000,
-  max: 120,           // 120 reads/writes per minute per IP
+  max: 200,           // 200 ops/min per (IP, sessionId) pair
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: (req) => `${req.ip}:${(req.params as Record<string, string>).id ?? 'list'}`,
   message: { error: 'Session rate limit exceeded.' },
 });
 
@@ -78,12 +81,12 @@ interface SessionEntry {
   events:        SessionEvent[]; // timeline for replay
 }
 
-const SESSION_MAX       = 500;
-const SESSION_TTL_MS    = 180 * 24 * 3600_000; // 180 days idle → evict
-const SESSION_ID_RE     = /^[a-f0-9]{1,64}$/; // hex IDs only
-const SESSION_CODE_MAX  = 64  * 1024;  // 64 KB
-const SESSION_LANG_MAX  = 32;
-const SESSION_EVENTS_MAX = 2000;
+const SESSION_MAX        = 500;
+const SESSION_TTL_MS     = 180 * 24 * 3600_000; // 180 days idle → evict
+const SESSION_ID_RE      = /^[a-f0-9]{1,64}$/;  // hex IDs only
+const SESSION_CODE_MAX   = 64  * 1024;           // 64 KB
+const SESSION_LANG_MAX   = 32;
+const SESSION_EVENTS_MAX = 600;  // ~10 min of 10s-sampled snapshots per session
 
 const sessionStore = new Map<string, SessionEntry>();
 
@@ -91,11 +94,24 @@ const sessionStore = new Map<string, SessionEntry>();
 const DATA_DIR = process.env.DATA_DIR ?? '/tmp/coderpad';
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 
+// Async write — never blocks the event loop
 function saveSessions() {
+  const payload = JSON.stringify([...sessionStore.entries()]);
   try {
     if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.writeFileSync(SESSIONS_FILE, JSON.stringify([...sessionStore.entries()]));
   } catch { /* ignore */ }
+  fs.writeFile(SESSIONS_FILE, payload, () => { /* ignore errors */ });
+}
+
+// Debounced save: coalesce rapid POST bursts into a single write after 5 s.
+// With 100 simultaneous interviews this prevents ~100 write/s → 1 write/5 s.
+let _saveTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleSave() {
+  if (_saveTimer) return;
+  _saveTimer = setTimeout(() => {
+    _saveTimer = null;
+    saveSessions();
+  }, 5_000);
 }
 
 function loadSessions() {
@@ -107,7 +123,7 @@ function loadSessions() {
   } catch { /* ignore */ }
 }
 loadSessions();
-setInterval(saveSessions, 5 * 60_000); // save every 5 min
+setInterval(saveSessions, 5 * 60_000); // periodic full save every 5 min
 
 // Evict sessions idle longer than TTL, and enforce max size
 function evictSessions() {
@@ -279,7 +295,7 @@ app.post('/api/session/:id', sessionLimiter, (req, res) => {
   existing.ts          = Date.now();
   existing.lastAccess  = Date.now();
   sessionStore.set(id, existing);
-  saveSessions();
+  scheduleSave();   // debounced — coalesces bursts into one write per 5 s
   res.json({ ok: true });
 });
 

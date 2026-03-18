@@ -25,16 +25,11 @@ app.use(helmet({
 }));
 
 // ── CORS ──────────────────────────────────────────────────────────────────────
-if (!process.env.ALLOWED_ORIGINS) {
-  console.warn('⚠ ALLOWED_ORIGINS is not set — CORS is open to all origins. Set it in production.');
-}
-const allowedOrigins = process.env.ALLOWED_ORIGINS
-  ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
-  : '*';
-
+// CORS: allow all origins — interview links are shared publicly and
+// the Vercel deployment URL changes on each alias.
 app.use(cors({
-  origin: allowedOrigins,
-  methods: ['GET', 'POST'],
+  origin: '*',
+  methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type'],
 }));
 

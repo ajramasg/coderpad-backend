@@ -62,11 +62,13 @@ const sessionLimiter = rateLimit({
 
 // ── Session store (in-memory, HTTP polling) ──────────────────────────────────
 interface SessionEntry {
-  code:       string;
-  languageId: string;
-  output:     unknown;
-  ts:         number;
-  lastAccess: number;
+  code:          string;
+  languageId:    string;
+  output:        unknown;
+  ts:            number;
+  description:   string;   // question description set by host
+  descriptionTs: number;   // when description was last updated
+  lastAccess:    number;
 }
 
 const SESSION_MAX       = 500;          // max concurrent sessions
@@ -150,8 +152,9 @@ app.get('/api/session/:id', sessionLimiter, (req, res) => {
   const s = sessionStore.get(id);
   if (s) s.lastAccess = Date.now();
   res.json(s
-    ? { code: s.code, languageId: s.languageId, output: s.output, ts: s.ts }
-    : { code: '', languageId: 'javascript', output: null, ts: 0 }
+    ? { code: s.code, languageId: s.languageId, output: s.output, ts: s.ts,
+        description: s.description, descriptionTs: s.descriptionTs }
+    : { code: '', languageId: 'javascript', output: null, ts: 0, description: '', descriptionTs: 0 }
   );
 });
 
@@ -174,7 +177,8 @@ app.post('/api/session/:id', sessionLimiter, (req, res) => {
   }
 
   const existing = sessionStore.get(id) ?? {
-    code: '', languageId: 'javascript', output: null, ts: 0, lastAccess: Date.now(),
+    code: '', languageId: 'javascript', output: null, ts: 0,
+    description: '', descriptionTs: 0, lastAccess: Date.now(),
   };
 
   // Validate and apply only the provided fields
@@ -190,7 +194,16 @@ app.post('/api/session/:id', sessionLimiter, (req, res) => {
     existing.languageId = languageId;
   }
   if (output !== undefined) {
-    existing.output = output;   // stored as-is; only echoed back to same session
+    existing.output = output;
+  }
+
+  const { description } = req.body as Record<string, unknown>;
+  if (description !== undefined) {
+    if (typeof description !== 'string' || description.length > 8192) {
+      res.status(400).json({ error: 'Invalid description.' }); return;
+    }
+    existing.description   = description;
+    existing.descriptionTs = Date.now();
   }
 
   existing.ts          = Date.now();

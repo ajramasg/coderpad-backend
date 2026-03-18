@@ -12,6 +12,8 @@ interface Props {
   isRunning:      boolean;
   fontSize:       number;
   onRun:          () => void;
+  sessionId?:     string | null;
+  onReplay?:      () => void;
 }
 
 function useSecondsAgo(ts: number) {
@@ -30,6 +32,7 @@ function useSecondsAgo(ts: number) {
 
 export function MonitorView({
   languages, languageId, code, output, peerConnected, lastUpdateTs, isRunning, fontSize, onRun,
+  sessionId, onReplay,
 }: Props) {
   const [outputOpen, setOutputOpen] = useState(true);
   const [flashKey, setFlashKey] = useState(0);
@@ -80,6 +83,39 @@ export function MonitorView({
             ? <><span className="spinner" /> Running…</>
             : <><span className="run-icon">▶</span> Run candidate's code</>}
         </button>
+        {sessionId && onReplay && (
+          <button
+            onClick={onReplay}
+            title="View interview replay"
+            style={{
+              background: 'var(--bg)',
+              border: '1px solid var(--border)',
+              borderRadius: 6,
+              color: 'var(--text-muted)',
+              fontSize: 12,
+              fontWeight: 600,
+              padding: '5px 12px',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 5,
+              whiteSpace: 'nowrap',
+              transition: 'background .12s, color .12s, border-color .12s',
+            }}
+            onMouseEnter={e => {
+              (e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-hover)';
+              (e.currentTarget as HTMLButtonElement).style.color = 'var(--text)';
+              (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--accent)';
+            }}
+            onMouseLeave={e => {
+              (e.currentTarget as HTMLButtonElement).style.background = 'var(--bg)';
+              (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-muted)';
+              (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--border)';
+            }}
+          >
+            📼 Replay
+          </button>
+        )}
       </div>
 
       {/* ── Read-only editor ── */}

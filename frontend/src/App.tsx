@@ -9,6 +9,7 @@ import { Whiteboard } from './components/Whiteboard';
 import { TakeHomeMode } from './components/TakeHomeMode';
 import { MonitorView } from './components/MonitorView';
 import { QuestionBank } from './components/QuestionBank';
+import { ReplayView } from './components/ReplayView';
 import type { Question } from './utils/questions';
 import type { ExecutionResult, Language } from './types';
 import './App.css';
@@ -94,6 +95,7 @@ export default function App() {
   const [sessionRole]                     = useState<'host' | 'candidate' | null>(() => readUrlSession().role);
   const [showSession,   setShowSession]   = useState(false);
   const [showQuestions, setShowQuestions] = useState(false);
+  const [showReplay,    setShowReplay]    = useState(false);
   const [copiedHost,    setCopiedHost]    = useState(false);
   const [copiedCand,    setCopiedCand]    = useState(false);
 
@@ -303,49 +305,60 @@ export default function App() {
       finally { setIsRunning(false); }
     };
     return (
-      <div className="app">
-        <header className="header">
-          <div className="header-left">
-            <div className="logo"><span className="logo-bracket">&lt;/&gt;</span><span className="logo-name">Sigma Computing Interview</span></div>
-            <span className="session-monitor-badge">Monitor View</span>
-            {sessionId && <span className="session-id-chip">Session: {sessionId}</span>}
-          </div>
-          <div className="header-right">
-            <button
-              className={`qb-open-btn ${showQuestions ? 'qb-open-btn-active' : ''}`}
-              onClick={() => setShowQuestions(v => !v)}
-              title="Question Bank"
-            >
-              📋 Questions
-            </button>
-            <div className="font-size-ctrl">
-              <button className="icon-btn" onClick={() => setFontSize(s => Math.max(10, s - 1))}>A⁻</button>
-              <span className="font-size-label">{fontSize}px</span>
-              <button className="icon-btn" onClick={() => setFontSize(s => Math.min(24, s + 1))}>A⁺</button>
+      <>
+        <div className="app">
+          <header className="header">
+            <div className="header-left">
+              <div className="logo"><span className="logo-bracket">&lt;/&gt;</span><span className="logo-name">Sigma Computing Interview</span></div>
+              <span className="session-monitor-badge">Monitor View</span>
+              {sessionId && <span className="session-id-chip">Session: {sessionId}</span>}
             </div>
+            <div className="header-right">
+              <button
+                className={`qb-open-btn ${showQuestions ? 'qb-open-btn-active' : ''}`}
+                onClick={() => setShowQuestions(v => !v)}
+                title="Question Bank"
+              >
+                📋 Questions
+              </button>
+              <div className="font-size-ctrl">
+                <button className="icon-btn" onClick={() => setFontSize(s => Math.max(10, s - 1))}>A⁻</button>
+                <span className="font-size-label">{fontSize}px</span>
+                <button className="icon-btn" onClick={() => setFontSize(s => Math.min(24, s + 1))}>A⁺</button>
+              </div>
+            </div>
+          </header>
+          {showQuestions && (
+            <QuestionBank
+              activeSessionId={sessionId}
+              onAssign={handleAssign}
+              onClose={() => setShowQuestions(false)}
+            />
+          )}
+          <div className="main" style={{ overflow: 'hidden' }}>
+            <MonitorView
+              languages={LANGUAGES}
+              languageId={collab.remoteLanguageId}
+              code={collab.remoteCode}
+              output={collab.remoteOutput}
+              peerConnected={collab.peerConnected}
+              lastUpdateTs={collab.lastUpdateTs}
+              isRunning={isRunning}
+              fontSize={fontSize}
+              onRun={runMonitor}
+              sessionId={sessionId}
+              onReplay={() => setShowReplay(true)}
+            />
           </div>
-        </header>
-        {showQuestions && (
-          <QuestionBank
-            activeSessionId={sessionId}
-            onAssign={handleAssign}
-            onClose={() => setShowQuestions(false)}
+        </div>
+        {showReplay && sessionId && (
+          <ReplayView
+            sessionId={sessionId}
+            languages={LANGUAGES}
+            onClose={() => setShowReplay(false)}
           />
         )}
-        <div className="main" style={{ overflow: 'hidden' }}>
-          <MonitorView
-            languages={LANGUAGES}
-            languageId={collab.remoteLanguageId}
-            code={collab.remoteCode}
-            output={collab.remoteOutput}
-            peerConnected={collab.peerConnected}
-            lastUpdateTs={collab.lastUpdateTs}
-            isRunning={isRunning}
-            fontSize={fontSize}
-            onRun={runMonitor}
-          />
-        </div>
-      </div>
+      </>
     );
   }
 

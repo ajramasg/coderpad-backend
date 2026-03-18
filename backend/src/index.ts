@@ -3,6 +3,8 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
+import fs from 'fs';
+import path from 'path';
 import { executeCode } from './executor';
 import { setupCollab } from './collab';
 
@@ -56,6 +58,14 @@ const sessionLimiter = rateLimit({
 });
 
 // ── Session store (in-memory, HTTP polling) ──────────────────────────────────
+interface SessionEvent {
+  ts:          number;
+  type:        'code' | 'run' | 'language';
+  code?:       string;
+  languageId?: string;
+  output?:     unknown;
+}
+
 interface SessionEntry {
   code:          string;
   languageId:    string;
@@ -64,15 +74,40 @@ interface SessionEntry {
   description:   string;   // question description set by host
   descriptionTs: number;   // when description was last updated
   lastAccess:    number;
+  startedAt:     number;   // epoch ms when session was created
+  events:        SessionEvent[]; // timeline for replay
 }
 
-const SESSION_MAX       = 500;          // max concurrent sessions
-const SESSION_TTL_MS    = 6 * 3600_000; // 6 hours idle → evict
+const SESSION_MAX       = 500;
+const SESSION_TTL_MS    = 180 * 24 * 3600_000; // 180 days idle → evict
 const SESSION_ID_RE     = /^[a-f0-9]{1,64}$/; // hex IDs only
 const SESSION_CODE_MAX  = 64  * 1024;  // 64 KB
 const SESSION_LANG_MAX  = 32;
+const SESSION_EVENTS_MAX = 2000;
 
 const sessionStore = new Map<string, SessionEntry>();
+
+// ── File-based persistence ────────────────────────────────────────────────────
+const DATA_DIR = process.env.DATA_DIR ?? '/tmp/coderpad';
+const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
+
+function saveSessions() {
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(SESSIONS_FILE, JSON.stringify([...sessionStore.entries()]));
+  } catch { /* ignore */ }
+}
+
+function loadSessions() {
+  try {
+    if (!fs.existsSync(SESSIONS_FILE)) return;
+    const entries: [string, SessionEntry][] = JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf8'));
+    for (const [id, s] of entries) sessionStore.set(id, s);
+    console.log(`Loaded ${sessionStore.size} sessions from disk`);
+  } catch { /* ignore */ }
+}
+loadSessions();
+setInterval(saveSessions, 5 * 60_000); // save every 5 min
 
 // Evict sessions idle longer than TTL, and enforce max size
 function evictSessions() {
@@ -171,10 +206,50 @@ app.post('/api/session/:id', sessionLimiter, (req, res) => {
     }
   }
 
+  const isNew = !sessionStore.has(id);
   const existing = sessionStore.get(id) ?? {
     code: '', languageId: 'javascript', output: null, ts: 0,
     description: '', descriptionTs: 0, lastAccess: Date.now(),
+    startedAt: 0, events: [],
   };
+
+  // Set startedAt on first creation
+  if (isNew || !existing.startedAt) {
+    existing.startedAt = Date.now();
+  }
+
+  // Ensure events array exists (for sessions loaded from old data)
+  if (!Array.isArray(existing.events)) {
+    existing.events = [];
+  }
+
+  // Record events before applying changes
+  const now = Date.now();
+
+  if (code !== undefined && typeof code === 'string') {
+    // Record code event if code changed and last code event was >10s ago
+    if (code !== existing.code) {
+      const lastCodeEvent = [...existing.events].reverse().find(e => e.type === 'code');
+      if (!lastCodeEvent || (now - lastCodeEvent.ts) > 10_000) {
+        existing.events.push({ ts: now, type: 'code', code: existing.code });
+      }
+    }
+  }
+
+  if (languageId !== undefined && typeof languageId === 'string') {
+    if (languageId !== existing.languageId) {
+      existing.events.push({ ts: now, type: 'language', languageId: existing.languageId });
+    }
+  }
+
+  if (output !== undefined) {
+    existing.events.push({ ts: now, type: 'run', output: existing.output });
+  }
+
+  // Cap events at SESSION_EVENTS_MAX
+  if (existing.events.length > SESSION_EVENTS_MAX) {
+    existing.events = existing.events.slice(existing.events.length - SESSION_EVENTS_MAX);
+  }
 
   // Validate and apply only the provided fields
   if (code !== undefined) {
@@ -204,7 +279,18 @@ app.post('/api/session/:id', sessionLimiter, (req, res) => {
   existing.ts          = Date.now();
   existing.lastAccess  = Date.now();
   sessionStore.set(id, existing);
+  saveSessions();
   res.json({ ok: true });
+});
+
+// ── Replay endpoint ───────────────────────────────────────────────────────────
+app.get('/api/session/:id/replay', sessionLimiter, (req, res) => {
+  const id = req.params.id;
+  if (!SESSION_ID_RE.test(id)) { res.status(400).json({ error: 'Invalid session ID.' }); return; }
+  const s = sessionStore.get(id);
+  if (!s) { res.status(404).json({ error: 'Session not found.' }); return; }
+  s.lastAccess = Date.now();
+  res.json({ startedAt: s.startedAt, endedAt: s.lastAccess, events: s.events });
 });
 
 // ── Catch-all: no stack traces to the client ──────────────────────────────────

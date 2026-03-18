@@ -1,7 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { ExecutionResult } from '../types';
 
-const API_BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? '';
+const API_BASE = ((import.meta.env.VITE_API_URL as string | undefined) ?? '').trim();
+
+// Expose baked-in API URL for debugging
+export const COLLAB_API_BASE = API_BASE;
 
 export interface CollabState {
   connected: boolean;
@@ -11,6 +14,7 @@ export interface CollabState {
   remoteOutput: ExecutionResult | null;
   remoteDescription: string;  // question description pushed by host → shown to candidate
   lastUpdateTs: number;       // epoch ms of last candidate update (0 = never)
+  lastError: string;          // last fetch error message for debugging
 }
 
 const INITIAL: CollabState = {
@@ -21,6 +25,7 @@ const INITIAL: CollabState = {
   remoteOutput: null,
   remoteDescription: '',
   lastUpdateTs: 0,
+  lastError: '',
 };
 
 // Push local state to the session store
@@ -78,8 +83,9 @@ export function useCollab(sessionId: string | null, role: 'host' | 'candidate' |
             remoteDescription: data.description ?? '',
           } : {}),
         }));
-      } catch {
-        setState(s => ({ ...s, connected: false }));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        setState(s => ({ ...s, connected: false, lastError: msg }));
       }
     }, 800);
 

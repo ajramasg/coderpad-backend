@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import Editor from '@monaco-editor/react';
 import type { editor } from 'monaco-editor';
 import { useSigmaData } from './hooks/useSigmaData';
-import { useCollab, COLLAB_API_BASE } from './hooks/useCollab';
+import { useCollab } from './hooks/useCollab';
 import { buildSigmaPrefix, buildSigmaStdin, getSigmaVarHint } from './utils/injectData';
 import { parseErrorLine } from './utils/debugParser';
 import { Whiteboard } from './components/Whiteboard';
@@ -372,12 +372,7 @@ export default function App() {
           <span className={`monitor-dot ${collab.connected ? 'dot-live' : 'dot-wait'}`} style={{ flexShrink: 0 }} />
           {collab.connected
             ? <>Your code is being shared with the interviewer live. Session: <strong>{sessionId}</strong></>
-            : <>
-                Connecting to interview session…
-                <span style={{ fontSize: 10, opacity: 0.7, marginLeft: 8 }}>
-                  api: {COLLAB_API_BASE || '(empty)'}{collab.lastError ? ` · err: ${collab.lastError}` : ''}
-                </span>
-              </>}
+            : 'Connecting to interview session…'}
         </div>
       )}
 

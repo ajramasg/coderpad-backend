@@ -25,6 +25,9 @@ app.use(helmet({
 }));
 
 // ── CORS ──────────────────────────────────────────────────────────────────────
+if (!process.env.ALLOWED_ORIGINS) {
+  console.warn('⚠ ALLOWED_ORIGINS is not set — CORS is open to all origins. Set it in production.');
+}
 const allowedOrigins = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
   : '*';
@@ -48,6 +51,47 @@ const execLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'Rate limit exceeded — max 30 executions per minute.' },
 });
+
+const sessionLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 120,           // 120 reads/writes per minute per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Session rate limit exceeded.' },
+});
+
+// ── Session store (in-memory, HTTP polling) ──────────────────────────────────
+interface SessionEntry {
+  code:       string;
+  languageId: string;
+  output:     unknown;
+  ts:         number;
+  lastAccess: number;
+}
+
+const SESSION_MAX       = 500;          // max concurrent sessions
+const SESSION_TTL_MS    = 6 * 3600_000; // 6 hours idle → evict
+const SESSION_ID_RE     = /^[a-f0-9]{1,64}$/; // hex IDs only
+const SESSION_CODE_MAX  = 64  * 1024;  // 64 KB
+const SESSION_LANG_MAX  = 32;
+
+const sessionStore = new Map<string, SessionEntry>();
+
+// Evict sessions idle longer than TTL, and enforce max size
+function evictSessions() {
+  const cutoff = Date.now() - SESSION_TTL_MS;
+  for (const [id, s] of sessionStore) {
+    if (s.lastAccess < cutoff) sessionStore.delete(id);
+  }
+  // If still over limit after TTL eviction, remove oldest first
+  if (sessionStore.size > SESSION_MAX) {
+    const sorted = [...sessionStore.entries()].sort((a, b) => a[1].lastAccess - b[1].lastAccess);
+    for (const [id] of sorted.slice(0, sessionStore.size - SESSION_MAX)) {
+      sessionStore.delete(id);
+    }
+  }
+}
+setInterval(evictSessions, 5 * 60_000);
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 app.get('/api/health', (_req, res) => {
@@ -93,6 +137,66 @@ app.post('/api/execute', execLimiter, (req, res) => {
   executeCode(language, code, stdinStr)
     .then(result => res.json(result))
     .catch(() => res.status(500).json({ error: 'Execution service unavailable.' }));
+});
+
+// ── Session endpoints (HTTP polling collab) ───────────────────────────────────
+
+app.get('/api/session/:id', sessionLimiter, (req, res) => {
+  const id = req.params.id;
+  if (!SESSION_ID_RE.test(id)) {
+    res.status(400).json({ error: 'Invalid session ID.' });
+    return;
+  }
+  const s = sessionStore.get(id);
+  if (s) s.lastAccess = Date.now();
+  res.json(s
+    ? { code: s.code, languageId: s.languageId, output: s.output, ts: s.ts }
+    : { code: '', languageId: 'javascript', output: null, ts: 0 }
+  );
+});
+
+app.post('/api/session/:id', sessionLimiter, (req, res) => {
+  const id = req.params.id;
+  if (!SESSION_ID_RE.test(id)) {
+    res.status(400).json({ error: 'Invalid session ID.' });
+    return;
+  }
+
+  const { code, languageId, output } = req.body as Record<string, unknown>;
+
+  // Enforce a hard cap on concurrent sessions
+  if (!sessionStore.has(id) && sessionStore.size >= SESSION_MAX) {
+    evictSessions();
+    if (sessionStore.size >= SESSION_MAX) {
+      res.status(503).json({ error: 'Session limit reached. Try again later.' });
+      return;
+    }
+  }
+
+  const existing = sessionStore.get(id) ?? {
+    code: '', languageId: 'javascript', output: null, ts: 0, lastAccess: Date.now(),
+  };
+
+  // Validate and apply only the provided fields
+  if (code !== undefined) {
+    if (typeof code !== 'string') { res.status(400).json({ error: 'code must be a string.' }); return; }
+    if (Buffer.byteLength(code, 'utf8') > SESSION_CODE_MAX) { res.status(400).json({ error: 'code exceeds 64 KB.' }); return; }
+    existing.code = code;
+  }
+  if (languageId !== undefined) {
+    if (typeof languageId !== 'string' || languageId.length > SESSION_LANG_MAX) {
+      res.status(400).json({ error: 'Invalid languageId.' }); return;
+    }
+    existing.languageId = languageId;
+  }
+  if (output !== undefined) {
+    existing.output = output;   // stored as-is; only echoed back to same session
+  }
+
+  existing.ts          = Date.now();
+  existing.lastAccess  = Date.now();
+  sessionStore.set(id, existing);
+  res.json({ ok: true });
 });
 
 // ── Catch-all: no stack traces to the client ──────────────────────────────────

@@ -17,62 +17,89 @@ interface LanguageConfig {
   runArgs: string[];
 }
 
-const EXECUTION_TIMEOUT = 10_000; // 10 seconds
-const COMPILE_TIMEOUT = 30_000;   // 30 seconds
-const MAX_OUTPUT = 1024 * 512;    // 512KB
+// ── Limits ────────────────────────────────────────────────────────────────────
+const EXECUTION_TIMEOUT = 10_000;  // 10 s wall-clock
+const COMPILE_TIMEOUT   = 30_000;  // 30 s compile
+const MAX_OUTPUT        = 256 * 1024; // 256 KB stdout
+
+// Linux ulimit wrapper: 256 MB virtual memory, 15 s CPU, 10 MB file writes,
+// 64 max user processes (fork-bomb protection), 100 open file descriptors.
+function withUlimits(args: string[]): string[] {
+  if (process.platform !== 'linux') return args;
+  const escaped = args.map(a => "'" + a.replace(/'/g, "'\\''") + "'").join(' ');
+  return [
+    '/bin/bash', '-c',
+    `ulimit -v 262144 -t 15 -f 20480 -u 64 -n 100 2>/dev/null; exec ${escaped}`,
+  ];
+}
+
+// Strip temp-dir paths from output so internals aren't leaked to the client.
+function sanitizeOutput(str: string, tmpDir: string): string {
+  return str.split(tmpDir).join('<tmpdir>');
+}
 
 function getConfig(language: string, tmpDir: string): LanguageConfig {
-  const f = (ext: string) => path.join(tmpDir, `main.${ext}`);
+  const f   = (ext: string) => path.join(tmpDir, `main.${ext}`);
   const bin = path.join(tmpDir, 'main');
 
   const configs: Record<string, LanguageConfig> = {
     javascript: {
       filePath: f('js'),
-      runArgs: ['node', f('js')],
+      runArgs:  ['node', f('js')],
     },
     typescript: {
       filePath: f('ts'),
-      runArgs: ['node', f('js')], // js file will be transpiled from ts
+      runArgs:  ['node', f('js')], // transpiled below
     },
     python: {
       filePath: f('py'),
-      runArgs: ['python3', f('py')],
+      runArgs:  ['python3', '-I', f('py')], // -I: isolated mode (no user site-packages)
     },
     java: {
-      filePath: path.join(tmpDir, 'Main.java'),
+      filePath:    path.join(tmpDir, 'Main.java'),
       compileArgs: ['javac', path.join(tmpDir, 'Main.java')],
-      runArgs: ['java', '-cp', tmpDir, 'Main'],
+      runArgs:     [
+        'java',
+        // NOTE: java.security.manager was deprecated in Java 17 and REMOVED in Java 21.
+        // The flag no longer has any effect on modern JVMs. Network isolation relies
+        // entirely on ulimit + OS process limits. For true sandboxing, run in a
+        // container with network=none.
+        '-Djava.awt.headless=true',
+        '-Xmx128m',   // cap heap at 128 MB
+        '-Xss512k',   // cap thread stack to limit recursion bombs
+        '-cp', tmpDir, 'Main',
+      ],
     },
     cpp: {
-      filePath: f('cpp'),
+      filePath:    f('cpp'),
       compileArgs: ['g++', '-std=c++17', '-O2', '-o', bin, f('cpp')],
-      runArgs: [bin],
+      runArgs:     [bin],
     },
     c: {
-      filePath: f('c'),
+      filePath:    f('c'),
       compileArgs: ['gcc', '-O2', '-o', bin, f('c')],
-      runArgs: [bin],
+      runArgs:     [bin],
     },
     go: {
       filePath: f('go'),
-      runArgs: ['go', 'run', f('go')],
+      runArgs:  ['go', 'run', f('go')],
     },
     ruby: {
       filePath: f('rb'),
-      runArgs: ['ruby', f('rb')],
+      runArgs:  ['ruby', '--disable-gems', f('rb')],
     },
     rust: {
-      filePath: f('rs'),
+      filePath:    f('rs'),
       compileArgs: ['rustc', '-o', bin, f('rs')],
-      runArgs: [bin],
+      runArgs:     [bin],
     },
     bash: {
       filePath: f('sh'),
-      runArgs: ['bash', f('sh')],
+      runArgs:  ['bash', '--restricted', f('sh')], // restricted mode
     },
     php: {
       filePath: f('php'),
-      runArgs: ['php', f('php')],
+      runArgs:  ['php', '-n', f('php')], // -n: no php.ini extensions
     },
   };
 
@@ -82,23 +109,23 @@ function getConfig(language: string, tmpDir: string): LanguageConfig {
 function spawnProcess(
   args: string[],
   stdin: string,
-  timeout: number
+  timeout: number,
+  tmpDir: string,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   return new Promise((resolve) => {
     let settled = false;
-    const [cmd, ...cmdArgs] = args;
+    const [cmd, ...cmdArgs] = withUlimits(args);
 
     const proc = spawn(cmd, cmdArgs, {
       env: {
-        ...process.env,
-        PATH: [
-          process.env.PATH,
-          '/usr/local/bin',
-          '/usr/bin',
-          '/bin',
-          '/opt/homebrew/bin',
-          '/opt/homebrew/sbin',
-        ].join(':'),
+        // Minimal, safe environment — no user secrets inherited
+        PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/homebrew/bin',
+        HOME: os.tmpdir(),
+        TMPDIR: os.tmpdir(),
+        LANG: 'en_US.UTF-8',
+        // Go needs these to locate the standard library
+        GOPATH: process.env.GOPATH ?? '/root/go',
+        GOROOT: process.env.GOROOT ?? '',
       },
     });
 
@@ -115,6 +142,10 @@ function spawnProcess(
 
     proc.stderr.on('data', (data: Buffer) => {
       stderr += data.toString();
+      // Cap stderr too
+      if (stderr.length > MAX_OUTPUT) {
+        stderr = stderr.slice(0, MAX_OUTPUT) + '\n[Stderr truncated]';
+      }
     });
 
     if (stdin) {
@@ -126,14 +157,18 @@ function spawnProcess(
     proc.on('close', (code) => {
       if (!settled) {
         settled = true;
-        resolve({ stdout, stderr, exitCode: code ?? 0 });
+        resolve({
+          stdout: sanitizeOutput(stdout, tmpDir),
+          stderr: sanitizeOutput(stderr, tmpDir),
+          exitCode: code ?? 0,
+        });
       }
     });
 
     proc.on('error', (err) => {
       if (!settled) {
         settled = true;
-        resolve({ stdout, stderr: `Error: ${err.message}`, exitCode: 1 });
+        resolve({ stdout: '', stderr: `Execution error: ${err.message}`, exitCode: 1 });
       }
     });
 
@@ -156,16 +191,19 @@ function spawnProcess(
 export async function executeCode(
   language: string,
   code: string,
-  stdin = ''
+  stdin = '',
 ): Promise<ExecutionResult> {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'coderpad-'));
-  const start = Date.now();
+  const start  = Date.now();
 
   try {
     const config = getConfig(language, tmpDir);
-    fs.writeFileSync(config.filePath, code, 'utf-8');
 
-    // TypeScript: transpile to JS before running
+    // Ensure the temp dir itself is not world-writable beyond what's needed
+    fs.chmodSync(tmpDir, 0o700);
+    fs.writeFileSync(config.filePath, code, { encoding: 'utf-8', mode: 0o600 });
+
+    // TypeScript: transpile to JS in-process before running
     if (language === 'typescript') {
       const tsCode = fs.readFileSync(config.filePath, 'utf-8');
       const { outputText, diagnostics } = ts.transpileModule(tsCode, {
@@ -180,22 +218,21 @@ export async function executeCode(
 
       if (diagnostics && diagnostics.length > 0) {
         const errors = diagnostics
-          .map((d) => ts.flattenDiagnosticMessageText(d.messageText, '\n'))
+          .map(d => ts.flattenDiagnosticMessageText(d.messageText, '\n'))
           .join('\n');
         return { stdout: '', stderr: errors, exitCode: 1, executionTime: Date.now() - start };
       }
 
-      const jsPath = path.join(tmpDir, 'main.js');
-      fs.writeFileSync(jsPath, outputText);
+      fs.writeFileSync(path.join(tmpDir, 'main.js'), outputText, { mode: 0o600 });
     }
 
     // Compile step (C, C++, Java, Rust)
     if (config.compileArgs) {
-      const compile = await spawnProcess(config.compileArgs, '', COMPILE_TIMEOUT);
+      const compile = await spawnProcess(config.compileArgs, '', COMPILE_TIMEOUT, tmpDir);
       if (compile.exitCode !== 0) {
         return {
           stdout: compile.stdout,
-          stderr: compile.stderr || 'Compilation failed',
+          stderr:  compile.stderr || 'Compilation failed',
           exitCode: compile.exitCode,
           executionTime: Date.now() - start,
         };
@@ -203,12 +240,13 @@ export async function executeCode(
     }
 
     // Execute
-    const run = await spawnProcess(config.runArgs, stdin, EXECUTION_TIMEOUT);
+    const run = await spawnProcess(config.runArgs, stdin, EXECUTION_TIMEOUT, tmpDir);
     return { ...run, executionTime: Date.now() - start };
+
   } catch (err) {
     return {
       stdout: '',
-      stderr: err instanceof Error ? err.message : 'Unknown error',
+      stderr:  err instanceof Error ? err.message : 'Unknown execution error',
       exitCode: 1,
       executionTime: Date.now() - start,
     };

@@ -293,6 +293,22 @@ app.get('/api/session/:id/replay', sessionLimiter, (req, res) => {
   res.json({ startedAt: s.startedAt, endedAt: s.lastAccess, events: s.events });
 });
 
+// ── Sessions list (for history tab) ──────────────────────────────────────────
+app.get('/api/sessions', sessionLimiter, (_req, res) => {
+  const list = [...sessionStore.entries()]
+    .map(([id, s]) => ({
+      id,
+      startedAt:   s.startedAt,
+      lastAccess:  s.lastAccess,
+      languageId:  s.languageId,
+      codePreview: s.code.slice(0, 120).replace(/\n/g, ' '),
+      eventCount:  s.events.length,
+      hasOutput:   s.output != null,
+    }))
+    .sort((a, b) => b.lastAccess - a.lastAccess);
+  res.json({ sessions: list });
+});
+
 // ── Catch-all: no stack traces to the client ──────────────────────────────────
 app.use((_req, res) => res.status(404).json({ error: 'Not found.' }));
 

@@ -10,6 +10,7 @@ import { TakeHomeMode } from './components/TakeHomeMode';
 import { MonitorView } from './components/MonitorView';
 import { QuestionBank } from './components/QuestionBank';
 import { ReplayView } from './components/ReplayView';
+import { SessionsPanel } from './components/SessionsPanel';
 import type { Question } from './utils/questions';
 import type { ExecutionResult, Language } from './types';
 import './App.css';
@@ -73,7 +74,7 @@ function typeLabel(t: string): string {
   return map[t] ?? t;
 }
 
-type AppMode = 'code' | 'whiteboard' | 'takehome' | 'monitor';
+type AppMode = 'code' | 'whiteboard' | 'takehome' | 'monitor' | 'sessions';
 
 // ─── Read URL session params once ────────────────────────────────────────────
 
@@ -96,6 +97,7 @@ export default function App() {
   const [showSession,   setShowSession]   = useState(false);
   const [showQuestions, setShowQuestions] = useState(false);
   const [showReplay,    setShowReplay]    = useState(false);
+  const [replayTarget,  setReplayTarget]  = useState<string | null>(null);
   const [copiedHost,    setCopiedHost]    = useState(false);
   const [copiedCand,    setCopiedCand]    = useState(false);
 
@@ -355,7 +357,7 @@ export default function App() {
           <ReplayView
             sessionId={sessionId}
             languages={LANGUAGES}
-            onClose={() => setShowReplay(false)}
+            onClose={() => { setShowReplay(false); setReplayTarget(null); }}
           />
         )}
       </>
@@ -396,6 +398,9 @@ export default function App() {
               </button>
               <button className={`snav-item ${showQuestions ? 'snav-active' : ''}`} onClick={() => setShowQuestions(v => !v)}>
                 <span className="snav-icon">📋</span> Questions
+              </button>
+              <button className={`snav-item ${mode === 'sessions' ? 'snav-active' : ''}`} onClick={() => setMode('sessions')}>
+                <span className="snav-icon">📁</span> Sessions
               </button>
             </div>
           </nav>
@@ -760,6 +765,13 @@ Good luck!
               />
             </div>
           )}
+          {mode === 'sessions' && (
+            <div className="main" style={{ overflow: 'hidden auto' }}>
+              <SessionsPanel
+                onReplay={id => { setReplayTarget(id); setShowReplay(true); }}
+              />
+            </div>
+          )}
         </div>
       </div>
 
@@ -769,6 +781,15 @@ Good luck!
           activeSessionId={sessionId}
           onAssign={handleAssign}
           onClose={() => setShowQuestions(false)}
+        />
+      )}
+
+      {/* Replay overlay — launched from Sessions tab or monitor */}
+      {showReplay && (replayTarget ?? sessionId) && (
+        <ReplayView
+          sessionId={(replayTarget ?? sessionId)!}
+          languages={LANGUAGES}
+          onClose={() => { setShowReplay(false); setReplayTarget(null); }}
         />
       )}
     </div>

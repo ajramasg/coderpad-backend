@@ -3,7 +3,9 @@
   "private": true,
   "workspaces": ["frontend", "backend"],
   "scripts": {
-    "dev": "concurrently -n 'backend,frontend' -c 'cyan,green' \"npm run dev --workspace=backend\" \"npm run dev --workspace=frontend\""
+    "dev": "concurrently -n 'backend,frontend' -c 'cyan,green' \"npm run dev --workspace=backend\" \"npm run dev --workspace=frontend\"",
+    "build": "npm run build --workspace=backend",
+    "start": "node backend/dist/index.js"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"

@@ -18,9 +18,12 @@ interface LanguageConfig {
 }
 
 // ── Limits ────────────────────────────────────────────────────────────────────
-const EXECUTION_TIMEOUT = 10_000;  // 10 s wall-clock
-const COMPILE_TIMEOUT   = 30_000;  // 30 s compile
-const MAX_OUTPUT        = 256 * 1024; // 256 KB stdout
+const EXECUTION_TIMEOUT  = 10_000;  // 10 s wall-clock
+const COMPILE_TIMEOUT    = 30_000;  // 30 s compile
+const MAX_OUTPUT         = 256 * 1024; // 256 KB stdout
+const MAX_CONCURRENT     = 20;      // max simultaneous child processes (prevents OOM under load)
+
+let activeExecutions = 0;
 
 // Linux ulimit wrapper: 256 MB virtual memory, 15 s CPU, 10 MB file writes,
 // 64 max user processes (fork-bomb protection), 100 open file descriptors.
@@ -193,6 +196,16 @@ export async function executeCode(
   code: string,
   stdin = '',
 ): Promise<ExecutionResult> {
+  if (activeExecutions >= MAX_CONCURRENT) {
+    return {
+      stdout: '',
+      stderr: 'Server busy — too many concurrent executions. Please try again in a moment.',
+      exitCode: 1,
+      executionTime: 0,
+    };
+  }
+
+  activeExecutions++;
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'coderpad-'));
   const start  = Date.now();
 
@@ -251,6 +264,7 @@ export async function executeCode(
       executionTime: Date.now() - start,
     };
   } finally {
+    activeExecutions--;
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 }

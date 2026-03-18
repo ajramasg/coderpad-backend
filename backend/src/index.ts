@@ -83,10 +83,11 @@ interface SessionEntry {
 
 const SESSION_MAX        = 500;
 const SESSION_TTL_MS     = 180 * 24 * 3600_000; // 180 days idle → evict
-const SESSION_ID_RE      = /^[a-f0-9]{1,64}$/;  // hex IDs only
+const SESSION_ID_RE      = /^[a-f0-9]{16,64}$/; // hex IDs only, min 16 chars (prevents enumeration)
 const SESSION_CODE_MAX   = 64  * 1024;           // 64 KB
 const SESSION_LANG_MAX   = 32;
 const SESSION_EVENTS_MAX = 600;  // ~10 min of 10s-sampled snapshots per session
+const SESSION_OUTPUT_MAX = 8  * 1024;  // 8 KB — output stored per-event, caps memory usage
 
 const sessionStore = new Map<string, SessionEntry>();
 
@@ -280,12 +281,18 @@ app.post('/api/session/:id', sessionLimiter, (req, res) => {
     existing.languageId = languageId;
   }
   if (output !== undefined) {
+    // Cap serialized output size to prevent per-event memory exhaustion
+    const serialized = JSON.stringify(output);
+    if (Buffer.byteLength(serialized, 'utf8') > SESSION_OUTPUT_MAX) {
+      res.status(400).json({ error: 'output exceeds 8 KB.' }); return;
+    }
     existing.output = output;
   }
 
   const { description } = req.body as Record<string, unknown>;
   if (description !== undefined) {
-    if (typeof description !== 'string' || description.length > 8192) {
+    // Use byteLength, not .length — emoji/CJK are up to 4 bytes each
+    if (typeof description !== 'string' || Buffer.byteLength(description, 'utf8') > 8192) {
       res.status(400).json({ error: 'Invalid description.' }); return;
     }
     existing.description   = description;

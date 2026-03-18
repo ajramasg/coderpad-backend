@@ -2,6 +2,19 @@ import { WebSocketServer, WebSocket } from 'ws';
 import type { Server } from 'http';
 import type { IncomingMessage } from 'http';
 
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const SESSION_ID_RE      = /^[a-f0-9]{16,64}$/;  // must match index.ts
+const ALLOWED_LANGUAGES  = new Set([
+  'javascript', 'typescript', 'python', 'java',
+  'cpp', 'c', 'go', 'ruby', 'rust', 'bash', 'php',
+]);
+const MAX_WS_SESSIONS    = 300;   // cap in-memory WS sessions
+const MAX_PARTICIPANTS   = 10;    // max connections per session (prevents broadcast amplification)
+const MAX_MSG_BYTES      = 70_000; // slightly over 64 KB code limit + envelope
+const MAX_MSGS_PER_SEC   = 30;    // per-connection message rate limit
+const MAX_OUTPUT_BYTES   = 8_192; // output field size cap (mirrors HTTP API)
+
 // ─── Session state ────────────────────────────────────────────────────────────
 
 interface SessionState {
@@ -14,6 +27,9 @@ interface Participant {
   ws: WebSocket;
   role: 'host' | 'candidate';
   id: string;
+  // Rate limiting
+  msgCount: number;
+  msgWindowStart: number;
 }
 
 interface Session {
@@ -55,11 +71,18 @@ export function setupCollab(server: Server): void {
     const qs  = raw.includes('?') ? raw.slice(raw.indexOf('?') + 1) : '';
     const p   = new URLSearchParams(qs);
 
-    const sessionId = (p.get('session') ?? '').slice(0, 32);
+    const sessionId = (p.get('session') ?? '').slice(0, 64);
     const role      = p.get('role') as 'host' | 'candidate' | null;
 
-    if (!sessionId || (role !== 'host' && role !== 'candidate')) {
+    // Validate session ID and role
+    if (!SESSION_ID_RE.test(sessionId) || (role !== 'host' && role !== 'candidate')) {
       ws.close(1008, 'Bad params');
+      return;
+    }
+
+    // Cap total WS sessions to prevent memory exhaustion
+    if (!sessions.has(sessionId) && sessions.size >= MAX_WS_SESSIONS) {
+      ws.close(1013, 'Server capacity reached');
       return;
     }
 
@@ -74,8 +97,17 @@ export function setupCollab(server: Server): void {
     const session = sessions.get(sessionId)!;
     session.lastActivity = Date.now();
 
+    // Cap participants per session (prevents broadcast amplification attacks)
+    if (session.participants.size >= MAX_PARTICIPANTS) {
+      ws.close(1013, 'Session full');
+      return;
+    }
+
     const pid = Math.random().toString(36).slice(2, 10);
-    session.participants.set(pid, { ws, role, id: pid });
+    session.participants.set(pid, {
+      ws, role, id: pid,
+      msgCount: 0, msgWindowStart: Date.now(),
+    });
 
     // Send current state to new joiner
     ws.send(JSON.stringify({ type: 'state', state: session.state }));
@@ -84,6 +116,20 @@ export function setupCollab(server: Server): void {
     broadcast(session, pid, { type: 'peer-joined', role });
 
     ws.on('message', (raw: Buffer) => {
+      // Drop oversized frames immediately
+      if (raw.length > MAX_MSG_BYTES) return;
+
+      // Per-connection rate limit: max MAX_MSGS_PER_SEC messages per second
+      const participant = session.participants.get(pid);
+      if (!participant) return;
+      const now = Date.now();
+      if (now - participant.msgWindowStart > 1000) {
+        participant.msgWindowStart = now;
+        participant.msgCount = 0;
+      }
+      participant.msgCount++;
+      if (participant.msgCount > MAX_MSGS_PER_SEC) return; // silently drop
+
       try {
         const msg = JSON.parse(raw.toString()) as { type: string; [k: string]: unknown };
         session.lastActivity = Date.now();
@@ -98,14 +144,24 @@ export function setupCollab(server: Server): void {
 
           case 'language':
             if (role === 'candidate' && typeof msg.languageId === 'string') {
-              session.state.languageId = msg.languageId.slice(0, 32);
-              broadcast(session, pid, { type: 'language', languageId: session.state.languageId });
+              // Validate against allowlist to prevent arbitrary strings being broadcast
+              const lang = msg.languageId.slice(0, 32);
+              if (ALLOWED_LANGUAGES.has(lang)) {
+                session.state.languageId = lang;
+                broadcast(session, pid, { type: 'language', languageId: lang });
+              }
             }
             break;
 
           case 'output':
-            session.state.output = msg.output ?? null;
-            broadcast(session, pid, { type: 'output', output: session.state.output });
+            // Cap output size before storing and broadcasting
+            if (msg.output !== undefined) {
+              const serialized = JSON.stringify(msg.output ?? null);
+              if (Buffer.byteLength(serialized, 'utf8') <= MAX_OUTPUT_BYTES) {
+                session.state.output = msg.output ?? null;
+                broadcast(session, pid, { type: 'output', output: session.state.output });
+              }
+            }
             break;
 
           case 'ping':

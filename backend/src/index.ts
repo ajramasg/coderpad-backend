@@ -79,6 +79,8 @@ interface SessionEntry {
   lastAccess:    number;
   startedAt:     number;   // epoch ms when session was created
   events:        SessionEvent[]; // timeline for replay
+  ended:         boolean;  // true once host has ended the session
+  endedAt:       number;   // epoch ms when session was ended (0 = not ended)
 }
 
 const SESSION_MAX        = 500;
@@ -200,8 +202,10 @@ app.get('/api/session/:id', sessionLimiter, (req, res) => {
   if (s) s.lastAccess = Date.now();
   res.json(s
     ? { code: s.code, languageId: s.languageId, output: s.output, ts: s.ts,
-        description: s.description, descriptionTs: s.descriptionTs }
-    : { code: '', languageId: 'javascript', output: null, ts: 0, description: '', descriptionTs: 0 }
+        description: s.description, descriptionTs: s.descriptionTs,
+        ended: s.ended ?? false, endedAt: s.endedAt ?? 0 }
+    : { code: '', languageId: 'javascript', output: null, ts: 0,
+        description: '', descriptionTs: 0, ended: false, endedAt: 0 }
   );
 });
 
@@ -227,6 +231,7 @@ app.post('/api/session/:id', sessionLimiter, (req, res) => {
   const existing = sessionStore.get(id) ?? {
     code: '', languageId: 'javascript', output: null, ts: 0,
     description: '', descriptionTs: 0, lastAccess: Date.now(),
+    ended: false, endedAt: 0,
     startedAt: 0, events: [],
   };
 
@@ -297,6 +302,13 @@ app.post('/api/session/:id', sessionLimiter, (req, res) => {
     }
     existing.description   = description;
     existing.descriptionTs = Date.now();
+  }
+
+  const { ended } = req.body as Record<string, unknown>;
+  if (ended !== undefined) {
+    if (ended !== true) { res.status(400).json({ error: 'ended must be true.' }); return; }
+    existing.ended   = true;
+    existing.endedAt = Date.now();
   }
 
   existing.ts          = Date.now();

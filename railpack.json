@@ -1,0 +1,5 @@
+{
+  "install": "cd backend && npm install",
+  "build": "cd backend && npm run build",
+  "start": "node backend/dist/index.js"
+}

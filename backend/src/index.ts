@@ -220,4 +220,3 @@ setupCollab(server);
 server.listen(PORT, () => {
   console.log(`✓ CoderPad backend → http://localhost:${PORT}`);
 });
-# deploy trigger

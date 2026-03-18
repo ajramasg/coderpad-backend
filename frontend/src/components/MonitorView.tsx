@@ -15,14 +15,14 @@ interface Props {
 }
 
 function useSecondsAgo(ts: number) {
-  const [, setTick] = useState(0);
+  const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!ts) return;
-    const id = setInterval(() => setTick(t => t + 1), 1000);
+    const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, [ts]);
   if (!ts) return null;
-  const secs = Math.floor((Date.now() - ts) / 1000);
+  const secs = Math.floor((now - ts) / 1000);
   if (secs < 5) return 'just now';
   if (secs < 60) return `${secs}s ago`;
   return `${Math.floor(secs / 60)}m ago`;
@@ -32,35 +32,44 @@ export function MonitorView({
   languages, languageId, code, output, peerConnected, lastUpdateTs, isRunning, fontSize, onRun,
 }: Props) {
   const [outputOpen, setOutputOpen] = useState(true);
-  const [flash, setFlash] = useState(false);
+  const [flashKey, setFlashKey] = useState(0);
   const secsAgo = useSecondsAgo(lastUpdateTs);
   const lang = languages.find(l => l.id === languageId) ?? languages[0];
   const passed = output?.exitCode === 0;
+  const lines = code ? code.split('\n').length : 0;
 
-  // Flash the editor border briefly when new code arrives
+  // Bump flashKey every time new code arrives to restart the CSS animation
   useEffect(() => {
     if (!lastUpdateTs) return;
-    setFlash(true);
-    const t = setTimeout(() => setFlash(false), 600);
-    return () => clearTimeout(t);
+    setFlashKey(k => k + 1);
   }, [lastUpdateTs]);
+
+  const isReceiving = lastUpdateTs > 0 && (Date.now() - lastUpdateTs) < 3000;
 
   return (
     <div className="monitor-root">
-      {/* ── Monitor header ── */}
+      {/* ── Monitor status bar (full-width, prominent) ── */}
+      <div className={`monitor-status-bar ${peerConnected ? 'msb-live' : 'msb-wait'}`}>
+        <span className={`monitor-dot ${peerConnected ? 'dot-live' : 'dot-wait'}`} style={{ flexShrink: 0 }} />
+        <span className="msb-text">
+          {peerConnected
+            ? <>Candidate connected — watching live</>
+            : 'Waiting for candidate to join…'}
+        </span>
+        {peerConnected && secsAgo && (
+          <span className="msb-updated">last update: {secsAgo}</span>
+        )}
+        {peerConnected && code && (
+          <span className="msb-stats">{lines} {lines === 1 ? 'line' : 'lines'}</span>
+        )}
+        {isReceiving && (
+          <span className="msb-live-badge">● RECEIVING</span>
+        )}
+      </div>
+
+      {/* ── Monitor tool bar ── */}
       <div className="monitor-header">
-        <div className="monitor-status">
-          <span className={`monitor-dot ${peerConnected ? 'dot-live' : 'dot-wait'}`} />
-          <span className="monitor-status-text">
-            {peerConnected ? 'Candidate connected — watching live' : 'Waiting for candidate…'}
-          </span>
-          {peerConnected && secsAgo && (
-            <span className="monitor-last-update">· updated {secsAgo}</span>
-          )}
-        </div>
-
         <div className="monitor-lang-badge">{lang.label}</div>
-
         <button
           className="run-btn"
           onClick={onRun}
@@ -69,12 +78,16 @@ export function MonitorView({
         >
           {isRunning
             ? <><span className="spinner" /> Running…</>
-            : <><span className="run-icon">▶</span> Run</>}
+            : <><span className="run-icon">▶</span> Run candidate's code</>}
         </button>
       </div>
 
       {/* ── Read-only editor ── */}
-      <div className={`monitor-editor ${flash ? 'monitor-editor-flash' : ''}`}>
+      <div
+        className="monitor-editor"
+        key={`flash-${flashKey}`}
+        style={flashKey > 0 ? { animation: 'monitor-flash 0.8s ease-out' } : undefined}
+      >
         {code ? (
           <Editor
             height="100%"

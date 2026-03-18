@@ -783,14 +783,22 @@ kbd {
 
 /* ── Monitor View ── */
 .monitor-root { display:flex;flex-direction:column;width:100%;height:100%;overflow:hidden; }
+
+/* Full-width status bar at top of monitor */
+.monitor-status-bar { display:flex;align-items:center;gap:10px;padding:10px 18px;flex-shrink:0;font-size:13px;font-weight:500;border-bottom:2px solid transparent; }
+.msb-live { background:#f0fdf4;border-bottom-color:#22c55e;color:#166534; }
+.msb-wait { background:#fff8f0;border-bottom-color:#f59e0b;color:#92400e; }
+.msb-text { flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
+.msb-updated { font-size:12px;opacity:0.75;white-space:nowrap;flex-shrink:0; }
+.msb-stats { font-size:12px;background:rgba(0,0,0,0.08);border-radius:4px;padding:2px 7px;white-space:nowrap;flex-shrink:0; }
+.msb-live-badge { font-size:11px;font-weight:700;color:#fff;background:#16a34a;border-radius:4px;padding:3px 8px;white-space:nowrap;flex-shrink:0;letter-spacing:0.05em;animation:pulse-badge 1s ease-in-out infinite; }
+@keyframes pulse-badge { 0%,100%{opacity:1} 50%{opacity:0.5} }
+
 .monitor-header { display:flex;align-items:center;gap:12px;padding:8px 16px;background:var(--bg-secondary);border-bottom:1px solid var(--border);flex-shrink:0; }
-.monitor-status { display:flex;align-items:center;gap:7px;flex:1;min-width:0; }
-.monitor-status-text { font-size:12px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
-.monitor-last-update { font-size:11px;color:var(--text-dim);white-space:nowrap; }
 .monitor-lang-badge { font-size:11px;font-weight:700;background:rgba(31,111,235,.15);color:var(--accent-hover);border-radius:4px;padding:3px 9px;flex-shrink:0; }
-.monitor-editor { flex:1;overflow:hidden;min-height:0;transition:box-shadow 0.3s; }
-@keyframes monitor-flash { 0%{box-shadow:inset 0 0 0 2px rgba(26,127,55,0.6)} 100%{box-shadow:inset 0 0 0 2px transparent} }
-.monitor-editor-flash { animation:monitor-flash 0.6s ease-out; }
+.monitor-editor { flex:1;overflow:hidden;min-height:0; }
+@keyframes monitor-flash { 0%{background:rgba(34,197,94,0.12)} 100%{background:transparent} }
+.monitor-editor[style*="animation"] { position:relative; }
 .monitor-output-panel { flex-shrink:0;border-top:1px solid var(--border);background:var(--bg-secondary);max-height:220px;display:flex;flex-direction:column;overflow:hidden; }
 .monitor-output-toggle { display:flex;align-items:center;gap:6px;width:100%;background:none;border:none;border-bottom:1px solid transparent;color:var(--text-muted);font-size:12px;font-weight:600;padding:7px 14px;cursor:pointer;text-align:left;transition:color .1s; }
 .monitor-output-toggle:hover { color:var(--text); }

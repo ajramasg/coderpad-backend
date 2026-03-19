@@ -62,6 +62,48 @@ const LANGUAGES: Language[] = [
     id: 'php', label: 'PHP', monacoId: 'php',
     defaultCode: `<?php\nfunction twoSum(array $nums, int $target): array {\n    $seen = [];\n    foreach ($nums as $i => $n) {\n        $c = $target - $n;\n        if (array_key_exists($c, $seen)) return [$seen[$c], $i];\n        $seen[$n] = $i;\n    }\n    return [];\n}\nprint_r(twoSum([2,7,11,15], 9));\nprint_r(twoSum([3,2,4], 6));\n`,
   },
+  {
+    id: 'sql', label: 'SQL', monacoId: 'sql',
+    defaultCode: `-- Baseball Database  ·  2023 & 2024 MLB seasons
+-- Tables: teams · players · games · batting_stats · pitching_stats
+--
+-- teams          (30 rows)   team_id, name, city, state, league, division,
+--                            stadium, capacity, founded, world_series_wins
+-- players       (~500 rows)  player_id, first_name, last_name, position,
+--                            team_id, jersey_number, bats, throws,
+--                            height_inches, weight_lbs, birth_year,
+--                            birth_state, debut_year, salary
+-- games        (~4860 rows)  game_id, season, game_date, home_team_id,
+--                            away_team_id, home_score, away_score,
+--                            innings, attendance, weather, game_duration_min
+-- batting_stats (~1400 rows) stat_id, player_id, team_id, season,
+--                            games_played, at_bats, runs, hits, doubles,
+--                            triples, home_runs, rbi, stolen_bases,
+--                            caught_stealing, walks, strikeouts,
+--                            batting_avg, on_base_pct, slugging_pct, ops
+-- pitching_stats (~700 rows) stat_id, player_id, team_id, season,
+--                            wins, losses, games, games_started,
+--                            complete_games, shutouts, saves,
+--                            innings_pitched, hits_allowed, earned_runs,
+--                            home_runs_allowed, walks, strikeouts, era, whip
+
+-- Top 10 home run hitters in the 2024 season
+SELECT
+  p.first_name || ' ' || p.last_name AS player,
+  t.name                             AS team,
+  t.league,
+  b.home_runs,
+  b.rbi,
+  ROUND(b.batting_avg, 3)            AS avg,
+  ROUND(b.ops, 3)                    AS ops
+FROM batting_stats b
+JOIN players p ON b.player_id = p.player_id
+JOIN teams   t ON b.team_id   = t.team_id
+WHERE b.season = 2024
+ORDER BY b.home_runs DESC
+LIMIT 10;
+`,
+  },
 ];
 
 const API_BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? '';
@@ -93,7 +135,13 @@ function readUrlSession() {
 export default function App() {
   // ── Session / collab
   const [sessionId,     setSessionId]     = useState<string | null>(() => readUrlSession().sessionId);
+  // sessionRole: from URL — used for all UI gating (which tabs/buttons to show)
   const [sessionRole]                     = useState<'host' | 'candidate' | null>(() => readUrlSession().role);
+  // isHostSession: true when host generates a session from the main page (no role= in URL).
+  // Combined with sessionRole to derive the collab role passed to useCollab — without
+  // touching sessionRole (which would hide the Interview panel if changed to 'host').
+  const [isHostSession, setIsHostSession] = useState(false);
+  const collabRole = sessionRole ?? (isHostSession ? 'host' : null);
   const [showSession,   setShowSession]   = useState(false);
   const [showQuestions, setShowQuestions] = useState(false);
   const [showReplay,    setShowReplay]    = useState(false);
@@ -108,6 +156,8 @@ export default function App() {
   const [output,    setOutput]    = useState<ExecutionResult | null>(null);
   const [stdin,     setStdin]     = useState('');
   const [isRunning, setIsRunning] = useState(false);
+  const [runQueued, setRunQueued] = useState(false);
+  const runStartRef = useRef<number>(0);
   const [activeTab, setActiveTab] = useState<'output' | 'stdin' | 'data' | 'debug'>('output');
   const [fontSize,  setFontSize]  = useState(14);
   const [autoRun,   setAutoRun]   = useState(false);
@@ -115,7 +165,7 @@ export default function App() {
 
   // ── Refs
   const sigmaData     = useSigmaData();
-  const { state: collab, sendCode, sendLanguage, sendOutput, sendDescription } = useCollab(sessionId, sessionRole);
+  const { state: collab, sendCode, sendLanguage, sendOutput, sendDescription, sendEnded } = useCollab(sessionId, collabRole);
   const editorRef     = useRef<editor.IStandaloneCodeEditor | null>(null);
   const monacoRef     = useRef<typeof import('monaco-editor') | null>(null);
   const decorationsRef = useRef<editor.IEditorDecorationsCollection | null>(null);
@@ -150,7 +200,12 @@ export default function App() {
   const handleRun = useCallback(async () => {
     if (isRunning) return;
     setIsRunning(true);
+    setRunQueued(false);
     setActiveTab('output');
+    runStartRef.current = Date.now();
+
+    // After 4 s with no result, the request is likely waiting in the server queue
+    const queueTimer = setTimeout(() => setRunQueued(true), 4_000);
 
     const prefix        = buildSigmaPrefix(language.id, sigmaData.rows);
     const injectedCode  = prefix + code;
@@ -183,7 +238,9 @@ export default function App() {
       });
       setErrorLine(null);
     } finally {
+      clearTimeout(queueTimer);
       setIsRunning(false);
+      setRunQueued(false);
     }
   }, [language, code, stdin, isRunning, sigmaData.rows, sessionId, sendOutput]);
 
@@ -263,6 +320,7 @@ export default function App() {
     const bytes = crypto.getRandomValues(new Uint8Array(8));
     const id = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
     setSessionId(id);
+    setIsHostSession(true); // starts useCollab polling in host mode without touching sessionRole
     setShowSession(true);
   }, []);
 
@@ -346,10 +404,12 @@ export default function App() {
               peerConnected={collab.peerConnected}
               lastUpdateTs={collab.lastUpdateTs}
               isRunning={isRunning}
+              runQueued={runQueued}
               fontSize={fontSize}
               onRun={runMonitor}
               sessionId={sessionId}
               onReplay={() => setShowReplay(true)}
+              onEndSession={sendEnded}
             />
           </div>
         </div>
@@ -376,6 +436,11 @@ export default function App() {
             ? <>Your code is being shared with the interviewer live. Session: <strong>{sessionId}</strong></>
             : 'Connecting to interview session…'}
         </div>
+      )}
+
+      {/* Session ended overlay — shown to candidate when host ends the session */}
+      {sessionRole === 'candidate' && collab.remoteEnded && (
+        <SessionEndedOverlay />
       )}
 
       <div className="app-shell">
@@ -539,7 +604,11 @@ Good luck!
                     <button className="icon-btn" title="Increase font" onClick={() => setFontSize(s => Math.min(24, s + 1))}>A⁺</button>
                   </div>
                   <button className="run-btn" onClick={handleRun} disabled={isRunning}>
-                    {isRunning ? <><span className="spinner" /> Running…</> : <><span className="run-icon">▶</span> Run</>}
+                    {isRunning
+                      ? runQueued
+                        ? <><span className="spinner" /> Queued…</>
+                        : <><span className="spinner" /> Running…</>
+                      : <><span className="run-icon">▶</span> Run</>}
                   </button>
                   <span className="shortcut-hint">⌘↵</span>
                 </>
@@ -563,6 +632,9 @@ Good luck!
           {sessionRole === 'candidate' && collab.remoteDescription && (
             <CandidateQuestionPanel description={collab.remoteDescription} />
           )}
+
+          {/* SQL schema reference — shown whenever SQL language is active */}
+          {mode === 'code' && language.id === 'sql' && <SqlSchemaPanel />}
 
           {/* Mode content */}
           {mode === 'code' && (
@@ -796,6 +868,66 @@ Good luck!
   );
 }
 
+// ─── SQL schema reference panel ──────────────────────────────────────────────
+
+const SQL_TABLES = [
+  {
+    name: 'teams',
+    rows: '30 rows',
+    cols: 'team_id · name · city · state · league (AL/NL) · division (East/Central/West) · stadium · capacity · founded · world_series_wins',
+  },
+  {
+    name: 'players',
+    rows: '~500 rows',
+    cols: 'player_id · first_name · last_name · position · team_id · jersey_number · bats (L/R/S) · throws (L/R) · height_inches · weight_lbs · birth_year · birth_state · debut_year · salary',
+  },
+  {
+    name: 'games',
+    rows: '~4,860 rows',
+    cols: 'game_id · season (2023/2024) · game_date · home_team_id · away_team_id · home_score · away_score · innings · attendance · weather · game_duration_min',
+  },
+  {
+    name: 'batting_stats',
+    rows: '~1,400 rows',
+    cols: 'stat_id · player_id · team_id · season · games_played · at_bats · runs · hits · doubles · triples · home_runs · rbi · stolen_bases · caught_stealing · walks · strikeouts · batting_avg · on_base_pct · slugging_pct · ops',
+  },
+  {
+    name: 'pitching_stats',
+    rows: '~700 rows',
+    cols: 'stat_id · player_id · team_id · season · wins · losses · games · games_started · complete_games · shutouts · saves · innings_pitched · hits_allowed · earned_runs · home_runs_allowed · walks · strikeouts · era · whip',
+  },
+];
+
+function SqlSchemaPanel() {
+  const [collapsed, setCollapsed] = useState(false);
+  return (
+    <div className="sql-schema-panel">
+      <button className="cq-toggle" onClick={() => setCollapsed(c => !c)}>
+        <span className={`toggle-arrow ${collapsed ? 'arrow-right' : 'arrow-down'}`}>›</span>
+        <span className="cq-toggle-label">⚾ Baseball Database Schema</span>
+        <span className="sql-schema-subtitle">2023 &amp; 2024 MLB seasons · SQLite · SELECT only</span>
+        {collapsed && <span className="cq-collapsed-hint">click to expand</span>}
+      </button>
+      {!collapsed && (
+        <div className="sql-schema-body">
+          {SQL_TABLES.map(t => (
+            <div key={t.name} className="sql-table-row">
+              <div className="sql-table-header">
+                <code className="sql-table-name">{t.name}</code>
+                <span className="sql-table-rows">{t.rows}</span>
+              </div>
+              <div className="sql-table-cols">{t.cols}</div>
+            </div>
+          ))}
+          <div className="sql-schema-hint">
+            All tables are pre-joined via <code>team_id</code> and <code>player_id</code> · Only SELECT / WITH / EXPLAIN allowed
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Candidate question description panel ────────────────────────────────────
 
 function CandidateQuestionPanel({ description }: { description: string }) {
@@ -832,3 +964,46 @@ function CandidateQuestionPanel({ description }: { description: string }) {
   );
 }
 
+// ─── Session ended overlay (shown to candidate) ───────────────────────────────
+
+function SessionEndedOverlay() {
+  const [secs, setSecs] = useState(10);
+
+  useEffect(() => {
+    if (secs <= 0) {
+      window.close();
+      // Fallback: if window.close() was blocked by the browser (tab opened directly,
+      // not via window.open()), navigate to a blank page after 500 ms.
+      // If close() succeeded, this timeout never fires.
+      const fallback = setTimeout(() => window.location.replace('about:blank'), 500);
+      return () => clearTimeout(fallback);
+    }
+    const t = setTimeout(() => setSecs(s => s - 1), 1000);
+    return () => clearTimeout(t);
+  }, [secs]);
+
+  return (
+    <div className="session-ended-overlay">
+      <div className="session-ended-card">
+        <div className="session-ended-icon">✓</div>
+        <h2 className="session-ended-title">Interview Complete</h2>
+        <p className="session-ended-msg">
+          The interviewer has ended this session. Thank you for your time — good luck!
+        </p>
+        <p className="session-ended-countdown">
+          {secs > 0
+            ? <>This window will close in <strong>{secs}</strong> second{secs !== 1 ? 's' : ''}…</>
+            : 'Closing…'}
+        </p>
+        {secs > 0 && (
+          <button
+            className="session-ended-close-btn"
+            onClick={() => { window.close(); setTimeout(() => window.location.replace('about:blank'), 300); }}
+          >
+            Close now
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}

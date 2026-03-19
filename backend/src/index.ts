@@ -2,7 +2,7 @@ import { createServer } from 'http';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import fs from 'fs';
 import path from 'path';
 import { executeCode } from './executor';
@@ -14,7 +14,7 @@ const PORT = Number(process.env.PORT ?? 3001);
 // ── Allowed languages (strict allowlist) ──────────────────────────────────────
 const ALLOWED_LANGUAGES = new Set([
   'javascript', 'typescript', 'python', 'java',
-  'cpp', 'c', 'go', 'ruby', 'rust', 'bash', 'php',
+  'cpp', 'c', 'go', 'ruby', 'rust', 'bash', 'php', 'sql',
 ]);
 
 // ── Limits ────────────────────────────────────────────────────────────────────
@@ -43,20 +43,20 @@ app.set('trust proxy', 1); // correct IP behind Railway's proxy
 
 const execLimiter = rateLimit({
   windowMs: 60_000,
-  max: 60,            // 60 executions per minute per IP
+  max: 300,           // 300 executions per minute per IP (supports many interviews per office)
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: 'Rate limit exceeded — max 60 executions per minute.' },
+  message: { error: 'Rate limit exceeded — max 300 executions per minute.' },
 });
 
-// Key by IP + session ID so 100 simultaneous interviews from the same
-// corporate NAT each get their own independent rate-limit bucket.
+// Key by IP + session ID so interviews from the same corporate NAT
+// each get their own independent rate-limit bucket.
 const sessionLimiter = rateLimit({
   windowMs: 60_000,
-  max: 200,           // 200 ops/min per (IP, sessionId) pair
+  max: 600,           // 600 ops/min per (IP, sessionId) pair
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => `${req.ip}:${(req.params as Record<string, string>).id ?? 'list'}`,
+  keyGenerator: (req, res) => `${ipKeyGenerator(req, res)}:${(req.params as Record<string, string>).id ?? 'list'}`,
   message: { error: 'Session rate limit exceeded.' },
 });
 
@@ -328,16 +328,19 @@ app.get('/api/session/:id/replay', sessionLimiter, (req, res) => {
   res.json({ startedAt: s.startedAt, endedAt: s.lastAccess, events: s.events });
 });
 
-// ── Sessions list (for history tab) ──────────────────────────────────────────
-app.get('/api/sessions', sessionLimiter, (_req, res) => {
+// ── Sessions list (for history tab — shows all interviews across all browsers) ─
+app.get('/api/sessions', (_req, res) => {
+  const cutoff = Date.now() - SESSION_TTL_MS;
   const list = [...sessionStore.entries()]
+    .filter(([, s]) => s.startedAt > 0 && s.lastAccess > cutoff)
     .map(([id, s]) => ({
       id,
       startedAt:   s.startedAt,
       lastAccess:  s.lastAccess,
       languageId:  s.languageId,
       codePreview: s.code.slice(0, 120).replace(/\n/g, ' '),
-      eventCount:  s.events.length,
+      ended:       s.ended ?? false,
+      endedAt:     s.endedAt ?? 0,
       hasOutput:   s.output != null,
     }))
     .sort((a, b) => b.lastAccess - a.lastAccess);

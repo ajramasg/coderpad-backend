@@ -10,10 +10,12 @@ interface Props {
   peerConnected:  boolean;
   lastUpdateTs:   number;
   isRunning:      boolean;
+  runQueued?:     boolean;
   fontSize:       number;
   onRun:          () => void;
   sessionId?:     string | null;
   onReplay?:      () => void;
+  onEndSession?:  () => void;
 }
 
 function useSecondsAgo(ts: number) {
@@ -31,11 +33,12 @@ function useSecondsAgo(ts: number) {
 }
 
 export function MonitorView({
-  languages, languageId, code, output, peerConnected, lastUpdateTs, isRunning, fontSize, onRun,
-  sessionId, onReplay,
+  languages, languageId, code, output, peerConnected, lastUpdateTs, isRunning, runQueued, fontSize, onRun,
+  sessionId, onReplay, onEndSession,
 }: Props) {
   const [outputOpen, setOutputOpen] = useState(true);
   const [flashKey, setFlashKey] = useState(0);
+  const [confirmEnd, setConfirmEnd] = useState(false);
   const secsAgo = useSecondsAgo(lastUpdateTs);
   const lang = languages.find(l => l.id === languageId) ?? languages[0];
   const passed = output?.exitCode === 0;
@@ -80,7 +83,9 @@ export function MonitorView({
           title="Run candidate's current code"
         >
           {isRunning
-            ? <><span className="spinner" /> Running…</>
+            ? runQueued
+              ? <><span className="spinner" /> Queued…</>
+              : <><span className="spinner" /> Running…</>
             : <><span className="run-icon">▶</span> Run candidate's code</>}
         </button>
         {sessionId && onReplay && (
@@ -115,6 +120,36 @@ export function MonitorView({
           >
             📼 Replay
           </button>
+        )}
+
+        {/* End Session — with confirmation guard to prevent accidental clicks */}
+        {onEndSession && (
+          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
+            {confirmEnd ? (
+              <>
+                <button
+                  className="end-session-confirm-btn"
+                  onClick={() => { onEndSession(); setConfirmEnd(false); }}
+                >
+                  Confirm end
+                </button>
+                <button
+                  className="end-session-cancel-btn"
+                  onClick={() => setConfirmEnd(false)}
+                >
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button
+                className="end-session-btn"
+                onClick={() => setConfirmEnd(true)}
+                title="End the interview session"
+              >
+                ■ End Session
+              </button>
+            )}
+          </div>
         )}
       </div>
 

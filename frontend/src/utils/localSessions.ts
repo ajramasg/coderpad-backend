@@ -14,6 +14,7 @@ export interface SessionMeta {
   lastAccess:  number;
   languageId:  string;
   codePreview: string;
+  title?:      string;
 }
 
 export interface EventSnapshot {
@@ -67,6 +68,7 @@ export function recordSnapshot(
     lastAccess:  now,
     languageId,
     codePreview: code.slice(0, 120).replace(/\n/g, ' '),
+    title:       idx >= 0 ? list[idx].title : undefined,
   };
   if (idx >= 0) list[idx] = meta;
   else list.unshift(meta);
@@ -85,6 +87,15 @@ export function getSessions(): SessionMeta[] {
 /** Return replay events for a session. */
 export function getEvents(id: string): EventSnapshot[] {
   return loadEvents(id);
+}
+
+/** Rename a session. Pass an empty string to clear the title. */
+export function renameSession(id: string, title: string) {
+  const list = loadList();
+  const idx  = list.findIndex(s => s.id === id);
+  if (idx < 0) return;
+  list[idx] = { ...list[idx], title: title.trim() || undefined };
+  saveList(list);
 }
 
 /** Delete a session and its events. */

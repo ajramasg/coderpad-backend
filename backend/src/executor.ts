@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as ts from 'typescript';
+import { runSQL } from './sqlRunner';
 
 export interface ExecutionResult {
   stdout: string;
@@ -21,9 +22,49 @@ interface LanguageConfig {
 const EXECUTION_TIMEOUT  = 10_000;  // 10 s wall-clock
 const COMPILE_TIMEOUT    = 30_000;  // 30 s compile
 const MAX_OUTPUT         = 256 * 1024; // 256 KB stdout
-const MAX_CONCURRENT     = 20;      // max simultaneous child processes (prevents OOM under load)
+const MAX_CONCURRENT     = 40;      // simultaneous child processes
+const MAX_QUEUE          = 120;     // requests waiting for a free slot
+const QUEUE_TIMEOUT_MS   = 45_000;  // max time to wait in queue
 
+// ── Slot-based execution queue ────────────────────────────────────────────────
+// Instead of returning "Server busy", requests wait in line until a slot opens.
+// This lets ~120 candidates click Run at once without anyone getting an error.
 let activeExecutions = 0;
+const waitQueue: Array<() => void> = [];
+
+/** Acquire a slot, waiting up to QUEUE_TIMEOUT_MS if all slots are taken.
+ *  Returns true if a slot was granted, false if the queue is full or timed out. */
+function acquireSlot(): Promise<boolean> {
+  if (activeExecutions < MAX_CONCURRENT) {
+    activeExecutions++;
+    return Promise.resolve(true);
+  }
+  if (waitQueue.length >= MAX_QUEUE) {
+    return Promise.resolve(false); // queue full — only happens under extreme load
+  }
+  return new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => {
+      const idx = waitQueue.indexOf(wake);
+      if (idx >= 0) waitQueue.splice(idx, 1);
+      resolve(false); // gave up waiting
+    }, QUEUE_TIMEOUT_MS);
+
+    const wake = () => {
+      clearTimeout(timer);
+      activeExecutions++;
+      resolve(true);
+    };
+    waitQueue.push(wake);
+  });
+}
+
+function releaseSlot(): void {
+  activeExecutions--;
+  if (waitQueue.length > 0) {
+    const next = waitQueue.shift()!;
+    next(); // hand slot directly to next waiter
+  }
+}
 
 // Linux ulimit wrapper: 256 MB virtual memory, 15 s CPU, 10 MB file writes,
 // 64 max user processes (fork-bomb protection), 100 open file descriptors.
@@ -196,18 +237,23 @@ export async function executeCode(
   code: string,
   stdin = '',
 ): Promise<ExecutionResult> {
-  if (activeExecutions >= MAX_CONCURRENT) {
+  // SQL runs in-process via SQLite — no sandbox overhead, no file I/O
+  if (language === 'sql') {
+    return await runSQL(code);
+  }
+
+  const start = Date.now();
+  const granted = await acquireSlot();
+  if (!granted) {
     return {
       stdout: '',
-      stderr: 'Server busy — too many concurrent executions. Please try again in a moment.',
+      stderr: 'Server is at capacity — please try again in a moment.',
       exitCode: 1,
-      executionTime: 0,
+      executionTime: Date.now() - start,
     };
   }
 
-  activeExecutions++;
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'coderpad-'));
-  const start  = Date.now();
 
   try {
     const config = getConfig(language, tmpDir);
@@ -264,7 +310,7 @@ export async function executeCode(
       executionTime: Date.now() - start,
     };
   } finally {
-    activeExecutions--;
+    releaseSlot();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 }

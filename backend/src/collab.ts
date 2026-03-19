@@ -7,9 +7,9 @@ import type { IncomingMessage } from 'http';
 const SESSION_ID_RE      = /^[a-f0-9]{16,64}$/;  // must match index.ts
 const ALLOWED_LANGUAGES  = new Set([
   'javascript', 'typescript', 'python', 'java',
-  'cpp', 'c', 'go', 'ruby', 'rust', 'bash', 'php',
+  'cpp', 'c', 'go', 'ruby', 'rust', 'bash', 'php', 'sql',
 ]);
-const MAX_WS_SESSIONS    = 300;   // cap in-memory WS sessions
+const MAX_WS_SESSIONS    = 600;   // cap in-memory WS sessions (300 interview pairs)
 const MAX_PARTICIPANTS   = 10;    // max connections per session (prevents broadcast amplification)
 const MAX_MSG_BYTES      = 70_000; // slightly over 64 KB code limit + envelope
 const MAX_MSGS_PER_SEC   = 30;    // per-connection message rate limit

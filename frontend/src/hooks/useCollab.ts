@@ -16,6 +16,7 @@ export interface CollabState {
   remoteDescription: string;  // question description pushed by host → shown to candidate
   lastUpdateTs: number;       // epoch ms of last candidate update (0 = never)
   lastError: string;          // last fetch error message for debugging
+  remoteEnded: boolean;       // true once host has ended the session
 }
 
 const INITIAL: CollabState = {
@@ -27,6 +28,7 @@ const INITIAL: CollabState = {
   remoteDescription: '',
   lastUpdateTs: 0,
   lastError: '',
+  remoteEnded: false,
 };
 
 // Push local state to the session store
@@ -59,6 +61,7 @@ export function useCollab(sessionId: string | null, role: 'host' | 'candidate' |
         const data = await res.json() as {
           code: string; languageId: string; output: ExecutionResult | null;
           ts: number; description: string; descriptionTs: number;
+          ended: boolean; endedAt: number;
         };
 
         const hasData = data.ts > 0;
@@ -71,20 +74,23 @@ export function useCollab(sessionId: string | null, role: 'host' | 'candidate' |
         lastTsRef.current     = data.ts;
         lastDescTsRef.current = data.descriptionTs ?? 0;
 
+        // Record snapshot outside setState — side effects must not live inside
+        // React state updater functions (called multiple times in concurrent mode).
+        if (codeUpdated) {
+          recordSnapshot(sessionId, data.code, data.languageId, data.output);
+        }
+
         setState(s => ({
           ...s,
           connected: true,
           peerConnected: hasData,
           lastUpdateTs: codeUpdated ? Date.now() : s.lastUpdateTs,
-          // Host reads candidate's code/language/output; also auto-saves to localStorage
-          ...(codeUpdated ? (() => {
-            recordSnapshot(sessionId, data.code, data.languageId, data.output);
-            return { remoteCode: data.code, remoteLanguageId: data.languageId, remoteOutput: data.output };
-          })() : {}),
+          // Host reads candidate's code/language/output
+          ...(codeUpdated ? { remoteCode: data.code, remoteLanguageId: data.languageId, remoteOutput: data.output } : {}),
           // Candidate reads question description pushed by host
-          ...(descUpdated ? {
-            remoteDescription: data.description ?? '',
-          } : {}),
+          ...(descUpdated ? { remoteDescription: data.description ?? '' } : {}),
+          // Any role: session ended flag (once true, stays true)
+          ...(data.ended && !s.remoteEnded ? { remoteEnded: true } : {}),
         }));
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -112,5 +118,9 @@ export function useCollab(sessionId: string | null, role: 'host' | 'candidate' |
     if (sessionId) pushSession(sessionId, { description });
   }, [sessionId]);
 
-  return { state, sendCode, sendLanguage, sendOutput, sendDescription };
+  const sendEnded = useCallback(() => {
+    if (sessionId) pushSession(sessionId, { ended: true });
+  }, [sessionId]);
+
+  return { state, sendCode, sendLanguage, sendOutput, sendDescription, sendEnded };
 }

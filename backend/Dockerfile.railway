@@ -2,6 +2,7 @@ FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PATH="/root/.cargo/bin:${PATH}"
+ENV NODE_OPTIONS="--max-old-space-size=256 --jitless"
 
 RUN apt-get update && \
     apt-get install -y curl gnupg ca-certificates && \
@@ -26,7 +27,7 @@ COPY backend/package.json backend/tsconfig.json ./
 COPY backend/src/ ./src/
 
 RUN npm install
-RUN NODE_OPTIONS="--max-old-space-size=512" npm run build
+RUN npm run build
 
 EXPOSE 3001
-CMD ["node", "--jitless", "--max-old-space-size=256", "dist/index.js"]
+CMD ["node", "dist/index.js"]
